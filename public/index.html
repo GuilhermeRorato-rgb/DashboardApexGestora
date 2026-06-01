@@ -280,6 +280,17 @@ table.asset-table{width:100%;border-collapse:collapse}
 .emi-add-btn{background:#fff;border:1px solid #0076D6;color:#0076D6;padding:0 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:inherit;white-space:nowrap;}
 .emi-add-btn:hover{background:#EEF3FA;}
 .emi-empty-state{text-align:center;color:#8AA0BD;padding:14px;font-size:13px;font-style:italic;}
+.cotas-period-seg{display:inline-flex;background:#EEF3FA;border-radius:6px;padding:2px;border:1px solid #D7E1EF;margin-left:auto;}
+.cotas-period-seg button{background:transparent;border:none;padding:5px 10px;font-weight:600;font-size:11px;color:#5A7199;cursor:pointer;border-radius:4px;transition:all .15s;font-family:inherit;}
+.cotas-period-seg button.active{background:#001C56;color:#fff;}
+.cotas-period-seg button:not(.active):hover{color:#0076D6;background:rgba(255,255,255,.5);}
+.cotas-bench-row{display:flex;gap:8px;flex-wrap:wrap;padding:6px 0 12px;border-top:1px dashed #E3EAF3;}
+.cotas-bench-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid #D7E1EF;border-radius:14px;background:#fff;cursor:pointer;font-size:11px;color:#5A7199;font-weight:600;user-select:none;transition:all .15s;}
+.cotas-bench-chip:hover{border-color:#0076D6;color:#0076D6;}
+.cotas-bench-chip.active{background:#001C56;color:#fff;border-color:#001C56;}
+.cotas-bench-chip .dot{width:9px;height:9px;border-radius:50%;background:#5A7199;}
+.cotas-chart-wrap{position:relative;height:260px;}
+.cotas-empty-msg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#8AA0BD;font-size:13px;font-style:italic;text-align:center;padding:20px;}
 .alloc-legend .al-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
 .alloc-legend .al-dot{width:14px;height:14px;border-radius:50%;flex-shrink:0;}
 .alloc-legend .al-lbl{font-size:12px;color:#5A7199;flex:1;}
@@ -627,7 +638,29 @@ table.asset-table{width:100%;border-collapse:collapse}
           </div>
         </div>
 
-        <div class="charts-row" style="grid-template-columns:1fr 1fr;margin-bottom:18px;">
+        <div id="cartCotasRow" style="display:none;margin-bottom:18px;">
+          <div class="card">
+            <h3>Variação Acumulada de Cotas
+              <div class="cotas-period-seg" id="cotasPeriodSeg">
+                <button data-p="inicio" class="active">Início</button>
+                <button data-p="mtd">MTD</button>
+                <button data-p="3m">3M</button>
+                <button data-p="6m">6M</button>
+                <button data-p="ytd">YTD</button>
+                <button data-p="12m">12M</button>
+              </div>
+            </h3>
+            <div class="cotas-bench-row" id="cotasBenchRow">
+              <div class="cotas-bench-chip" data-b="CDI"><span class="dot" style="background:#B8C5D6;"></span>CDI</div>
+              <div class="cotas-bench-chip" data-b="IPCA"><span class="dot" style="background:#3A4A66;"></span>IPCA</div>
+              <div class="cotas-bench-chip" data-b="SP500"><span class="dot" style="background:#3FC6FE;"></span>SP500</div>
+              <div class="cotas-bench-chip" data-b="CPI"><span class="dot" style="background:#0B8B3F;"></span>CPI</div>
+            </div>
+            <div class="cotas-chart-wrap">
+              <canvas id="chartCotas"></canvas>
+              <div class="cotas-empty-msg" id="cotasEmptyMsg">Selecione uma carteira para visualizar o gráfico.</div>
+            </div>
+          </div>
         </div>
 
         <div id="cartAllocRow" style="display:none;margin-bottom:18px;">
@@ -659,6 +692,7 @@ table.asset-table{width:100%;border-collapse:collapse}
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script>
 // =============== PARSING ATIVOS ===============
 const IGNORE_DESCRICAO = new Set(['TAXAS','CAIXA','CAIXA BLOQUEADO']);
@@ -1433,7 +1467,8 @@ function restoreEmissoresApexFromStorage(){try{const raw=localStorage.getItem(ST
 let cartChartAllocInst=null;
 const STORE_KEY_C='apex_dashboard_carteiras_v2';
 let cartChartCustInst=null;
-const cartState={carteira:'',grupoCart:'',section:'classe'};
+const cartState={carteira:'',grupoCart:'',section:'classe',cotasPeriod:'inicio',cotasBenchmarks:new Set()};
+let cartChartCotasInst=null;
 
 // ---- Matching helpers ----
 const CNPJ_MATCH_RE=/\d{2}\.?\d{3}\.?\d{3}\/\d{4}-\d{2}/;
@@ -1489,9 +1524,82 @@ function parseClientesWorkbook(wb){
       if(!rg12[c]||iso>rg12[c].date){rg12[c]={date:iso,c:colC,d:colD};}
     }
   }
-  const carteiras=[...new Set([...Object.keys(t1),...Object.keys(t2),...Object.keys(t16Class),...Object.keys(t16Cust),...Object.keys(rg12)])].sort((a,b)=>a.localeCompare(b,'pt-BR'));
+  // Cotas — daily quote series per carteira + benchmarks (optional sheet)
+  const cotas = parseCotasSheet(wb);
+  const cotasCarteiras = cotas ? Object.keys(cotas.series) : [];
+  const carteiras=[...new Set([...Object.keys(t1),...Object.keys(t2),...Object.keys(t16Class),...Object.keys(t16Cust),...Object.keys(rg12),...cotasCarteiras])].sort((a,b)=>a.localeCompare(b,'pt-BR'));
   const g=computeCartGruposFromCarteiras(carteiras);
-  return{t1,t2,t16Class,t16Cust,rg12,carteiras,grupos:g.grupos,gruposMap:g.gruposMap};
+  return{t1,t2,t16Class,t16Cust,rg12,cotas,carteiras,grupos:g.grupos,gruposMap:g.gruposMap};
+}
+
+// ===== Cotas (quote series) parser =====
+const COTAS_BENCH_COL = {CDI:'cdi', IPCA:'ipcadp', SP500:'US:SP500', CPI:'US:BLS_CPI'};
+const COTAS_COLOR_CART = '#001C56';
+const COTAS_COLOR_BENCH = {CDI:'#B8C5D6', IPCA:'#3A4A66', SP500:'#3FC6FE', CPI:'#0B8B3F'};
+function carteiraFromCotaColumn(col){
+  const m=String(col||'').match(/^EXT_(.+)_Cota$/i);
+  return m?m[1]:null;
+}
+function parseCotasSheet(wb){
+  const wsName = wb.SheetNames.find(n=>n&&n.trim().toLowerCase()==='cotas');
+  if(!wsName)return null;
+  const ws = wb.Sheets[wsName];
+  const aoa = XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:null,cellDates:true});
+  if(!aoa.length)return null;
+  const header = aoa[0];
+  if(!header || header.length < 2)return null;
+  const colMap = [];
+  header.forEach((h,i)=>{
+    if(i===0){colMap.push({idx:0,kind:'date',name:'Data'});return;}
+    const cart = carteiraFromCotaColumn(h);
+    if(cart){colMap.push({idx:i,kind:'carteira',name:cart});return;}
+    for(const display of Object.keys(COTAS_BENCH_COL)){
+      if(String(h||'').trim() === COTAS_BENCH_COL[display]){
+        colMap.push({idx:i,kind:'benchmark',name:display});return;
+      }
+    }
+  });
+  const carteiras = colMap.filter(c=>c.kind==='carteira').map(c=>c.name);
+  const benchmarks = colMap.filter(c=>c.kind==='benchmark');
+  if(!carteiras.length && !benchmarks.length)return null;
+  const dates=[];
+  const series={};carteiras.forEach(c=>series[c]=[]);
+  const benchSeries={};benchmarks.forEach(b=>benchSeries[b.name]=[]);
+  const cartCols={};carteiras.forEach(c=>cartCols[c]=colMap.find(x=>x.kind==='carteira'&&x.name===c).idx);
+  for(let r=1;r<aoa.length;r++){
+    const row = aoa[r];
+    if(!row || row[0]==null)continue;
+    const iso = toISODate(row[0]);
+    if(!iso)continue;
+    dates.push(iso);
+    carteiras.forEach(c=>{const v=row[cartCols[c]];series[c].push(typeof v==='number'&&isFinite(v)?v:null);});
+    benchmarks.forEach(b=>{const v=row[b.idx];benchSeries[b.name].push(typeof v==='number'&&isFinite(v)?v:null);});
+  }
+  return {dates, series, benchmarks:benchSeries};
+}
+function getCotasBaseIdx(period, lastDateIso, dates, series, firstCartIdx, lastCartIdx){
+  if(period === 'inicio') return firstCartIdx;
+  const [y, m] = lastDateIso.split('-').map(Number);
+  if(period === 'mtd' || period === 'ytd'){
+    const targetIso = period === 'mtd' ? lastDateIso.slice(0,7) + '-01' : y + '-01-01';
+    for(let i = lastCartIdx; i >= firstCartIdx; i--){
+      if(dates[i] < targetIso && series[i] != null) return i;
+    }
+    return firstCartIdx;
+  }
+  const months = {'3m':3, '6m':6, '12m':12}[period];
+  if(!months) return firstCartIdx;
+  const [yy, mm, dd] = lastDateIso.split('-').map(Number);
+  const start = new Date(Date.UTC(yy, mm-1, dd));
+  start.setUTCMonth(start.getUTCMonth() - months);
+  const sy = start.getUTCFullYear();
+  const sm = String(start.getUTCMonth()+1).padStart(2,'0');
+  const sd = String(start.getUTCDate()).padStart(2,'0');
+  const targetIso = sy+'-'+sm+'-'+sd;
+  for(let i = firstCartIdx; i <= lastCartIdx; i++){
+    if(dates[i] >= targetIso && series[i] != null) return i;
+  }
+  return firstCartIdx;
 }
 
 function computeCartGruposFromCarteiras(carteiras){
@@ -1714,6 +1822,129 @@ function renderPLCards(portfolios,isGroup,rows){
 }
 
 
+function renderCotasChart(){
+  const row = document.getElementById('cartCotasRow');
+  const empty = document.getElementById('cotasEmptyMsg');
+  const canvas = document.getElementById('chartCotas');
+  if(!row || !canvas) return;
+  if(!CART_DATA || !CART_DATA.cotas){
+    row.style.display = 'none';
+    if(cartChartCotasInst){cartChartCotasInst.destroy();cartChartCotasInst=null;}
+    return;
+  }
+  row.style.display = '';
+  if(cartChartCotasInst){cartChartCotasInst.destroy();cartChartCotasInst=null;}
+  let cartName = cartState.carteira;
+  if(cartState.grupoCart){cartName = cartState.grupoCart + '_Onshore';}
+  if(!cartName){
+    canvas.style.display='none';
+    empty.style.display='';
+    empty.textContent='Selecione uma carteira para visualizar o gráfico.';
+    return;
+  }
+  const cotas = CART_DATA.cotas;
+  const cartSeries = cotas.series && cotas.series[cartName];
+  if(!cartSeries){
+    canvas.style.display='none';
+    empty.style.display='';
+    empty.textContent = cartState.grupoCart
+      ? ('O grupo ' + cartState.grupoCart + ' não possui carteira Onshore com cotas disponíveis.')
+      : ('Sem cotas disponíveis para ' + cartName + '.');
+    return;
+  }
+  const firstCartIdx = cartSeries.findIndex(v=>v!=null);
+  if(firstCartIdx < 0){
+    canvas.style.display='none';
+    empty.style.display='';
+    empty.textContent = 'Sem cotas disponíveis para ' + cartName + '.';
+    return;
+  }
+  let lastCartIdx = cartSeries.length - 1;
+  while(lastCartIdx > firstCartIdx && cartSeries[lastCartIdx] == null) lastCartIdx--;
+  const lastCartDate = cotas.dates[lastCartIdx];
+  const startIdx = getCotasBaseIdx(cartState.cotasPeriod, lastCartDate, cotas.dates, cartSeries, firstCartIdx, lastCartIdx);
+  if(startIdx > lastCartIdx || cartSeries[startIdx] == null){
+    canvas.style.display='none';
+    empty.style.display='';
+    empty.textContent = 'Sem cotas no período selecionado.';
+    return;
+  }
+  const labels = cotas.dates.slice(startIdx, lastCartIdx+1);
+  const rawCart = cartSeries.slice(startIdx, lastCartIdx+1);
+  const baseCart = rawCart[0];
+  const cartPct = rawCart.map(v => v==null?null:((v / baseCart - 1) * 100));
+  const datasets = [{
+    label: cartName,
+    data: cartPct,
+    borderColor: COTAS_COLOR_CART,
+    backgroundColor: COTAS_COLOR_CART,
+    borderWidth: 2,
+    pointRadius: 0,
+    pointHoverRadius: 3,
+    tension: 0.15,
+    spanGaps: true,
+    pointStyle: 'rectRounded',
+  }];
+  cartState.cotasBenchmarks.forEach(b=>{
+    const bSeries = cotas.benchmarks && cotas.benchmarks[b];
+    if(!bSeries) return;
+    const rawB = bSeries.slice(startIdx, lastCartIdx+1);
+    const baseB = rawB.find(v=>v!=null);
+    if(baseB == null) return;
+    const bPct = rawB.map(v => v==null?null:((v / baseB - 1) * 100));
+    datasets.push({
+      label: b,
+      data: bPct,
+      borderColor: COTAS_COLOR_BENCH[b],
+      backgroundColor: COTAS_COLOR_BENCH[b],
+      borderWidth: 1.5,
+      borderDash: [4,3],
+      pointRadius: 0,
+      pointHoverRadius: 3,
+      tension: 0.15,
+      spanGaps: true,
+      pointStyle: 'rectRounded',
+    });
+  });
+  canvas.style.display = '';
+  empty.style.display = 'none';
+  cartChartCotasInst = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {mode:'index', intersect:false},
+      plugins: {
+        legend: {position:'bottom', labels:{boxWidth:12, boxHeight:12, padding:10, font:{size:11}, color:'#1A2B4C', usePointStyle:true}},
+        tooltip: {
+          callbacks: {
+            title: items => items[0]?.label,
+            label: ctx => {
+              const v = ctx.parsed.y;
+              if(v==null) return ctx.dataset.label + ': —';
+              const sign = v > 0 ? '+' : '';
+              return ctx.dataset.label + ': ' + sign + v.toFixed(2).replace('.', ',') + '%';
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: {unit: 'month', tooltipFormat:'dd/MM/yyyy', displayFormats:{month:'MMM/yy'}},
+          ticks: {color:'#5A7199', font:{size:10}, maxRotation:0},
+          grid: {color:'#F0F4F9'}
+        },
+        y: {
+          ticks: {color:'#5A7199', font:{size:10}, callback: v => (v > 0 ? '+' : '') + v.toFixed(1).replace('.', ',') + '%'},
+          grid: {color:'#F0F4F9'}
+        }
+      }
+    }
+  });
+}
+
 function renderCarteirasTab(){
   const portfolios=getCarteirasPortfolios();
   const isGroup=!!cartState.grupoCart;
@@ -1722,6 +1953,9 @@ function renderCarteirasTab(){
     document.getElementById('cartContent').style.display='none';
     document.getElementById('cartEmpty').style.display='block';
     if(plRow){plRow.style.display='none';plRow.innerHTML='';}
+    const cotasRow=document.getElementById('cartCotasRow');
+    if(cotasRow)cotasRow.style.display='none';
+    if(cartChartCotasInst){cartChartCotasInst.destroy();cartChartCotasInst=null;}
     return;
   }
   document.getElementById('cartEmpty').style.display='none';
@@ -1730,6 +1964,7 @@ function renderCarteirasTab(){
   renderPLCards(portfolios,isGroup,rows);
   renderCustPieChart(rows);
   renderRetornoSection(portfolios,isGroup);
+  renderCotasChart();
   renderAllocChart(rows);
   renderCartSection();
 }
@@ -1981,6 +2216,30 @@ document.getElementById('fileInputCart').addEventListener('change',e=>{if(e.targ
 
 document.getElementById('cartReloadBtn').addEventListener('click',()=>{document.getElementById('uploadScreenCart').style.display='flex';document.getElementById('dashboardCart').style.display='none';});
 document.getElementById('cartViewTabs').addEventListener('click',e=>{const b=e.target.closest('.tab');if(!b)return;document.querySelectorAll('#cartViewTabs .tab').forEach(x=>x.classList.remove('active'));b.classList.add('active');cartState.section=b.dataset.view;renderCartSection();});
+// ===== Cotas chart event listeners =====
+document.addEventListener('DOMContentLoaded',()=>{
+  const periodSeg = document.getElementById('cotasPeriodSeg');
+  if(periodSeg){
+    periodSeg.addEventListener('click', e => {
+      const b = e.target.closest('button');
+      if(!b)return;
+      periodSeg.querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
+      cartState.cotasPeriod = b.dataset.p;
+      renderCotasChart();
+    });
+  }
+  const benchRow = document.getElementById('cotasBenchRow');
+  if(benchRow){
+    benchRow.addEventListener('click', e => {
+      const chip = e.target.closest('.cotas-bench-chip');
+      if(!chip)return;
+      const name = chip.dataset.b;
+      if(cartState.cotasBenchmarks.has(name)){cartState.cotasBenchmarks.delete(name); chip.classList.remove('active');}
+      else {cartState.cotasBenchmarks.add(name); chip.classList.add('active');}
+      renderCotasChart();
+    });
+  }
+});
 
 (function init(){
   const today=new Date().toISOString().slice(0,10);

@@ -2107,7 +2107,7 @@ function renderCustPieChart(rows){
   if(cartChartCustInst){cartChartCustInst.destroy();cartChartCustInst=null;}
   const canvas=document.getElementById('chartCustPie');
   if(!entries.length){const ctx=canvas.getContext('2d');ctx.clearRect(0,0,canvas.width,canvas.height);return;}
-  cartChartCustInst=new Chart(canvas.getContext('2d'),{type:'doughnut',data:{labels:entries.map(x=>x[0]),datasets:[{data:entries.map(x=>x[1]),backgroundColor:APEX.palette,borderWidth:2,borderColor:'#fff'}]},options:{responsive:true,maintainAspectRatio:false,cutout:'52%',plugins:{legend:{position:'right',labels:{boxWidth:12,font:{size:11}}},tooltip:{callbacks:{label:ctx=>{const v=ctx.parsed;const p=total>0?(v/total*100).toFixed(1):'0';return ctx.label+': '+p+'%';}}}}}});
+  cartChartCustInst=new Chart(canvas.getContext('2d'),{type:'doughnut',data:{labels:entries.map(x=>x[0]),datasets:[{data:entries.map(x=>x[1]),backgroundColor:APEX.palette,borderWidth:2,borderColor:'#fff'}]},options:{responsive:true,maintainAspectRatio:false,cutout:'52%',plugins:{legend:{position:'right',labels:{boxWidth:12,font:{size:11}}},tooltip:{callbacks:{label:ctx=>{const v=ctx.parsed;const p=total>0?(v/total*100).toFixed(1).replace('.', ','):'0';return ctx.label+': R$ '+fmtCompact(v)+' ('+p+'%)';}}}}}});
 }
 
 function renderRetornoTable(carteira){
